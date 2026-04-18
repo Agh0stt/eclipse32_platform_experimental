@@ -2,6 +2,7 @@
 // Eclipse32 - Eclipse Shell (esh)
 // =============================================================================
 #include "shell.h"
+#include "ins_pkg.h"
 #include "../kernel/initramfs/initramfs.h"
 #include "../kernel/drivers/vbe/vbe.h"
 #include "../kernel/drivers/vga/vga.h"
@@ -433,6 +434,338 @@ static int tokenize(char *line, cmd_t *cmd) {
 }
 
 // =============================================================================
+// install, extra utilities, wavplay (PC speaker, 8-bit mono PCM)
+// =============================================================================
+static void builtin_install_cmd(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: install <package.ins>\n");
+        last_exit_code = 1;
+        return;
+    }
+    char r[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], r);
+    int rc = ins_install_from_file(r);
+    last_exit_code = (rc == 0) ? 0 : 1;
+}
+
+static void builtin_head(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: head <file> [lines]\n");
+        last_exit_code = 1;
+        return;
+    }
+    int maxl = 10;
+    if (cmd->argc >= 3) {
+        maxl = katoi(cmd->args[2]);
+        if (maxl <= 0) maxl = 10;
+    }
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], path);
+    int fd = fat32_open(path, FAT32_O_RDONLY);
+    if (fd < 0) {
+        term_set_color(TC_RED);
+        tprintf("head: cannot open\n");
+        term_reset();
+        last_exit_code = 1;
+        return;
+    }
+    char buf[256];
+    int lines = 0;
+    int col = 0;
+    while (lines < maxl) {
+        int n = fat32_read(fd, buf, 1);
+        if (n <= 0) break;
+        term_putchar(buf[0]);
+        if (buf[0] == '\n') lines++;
+        col++;
+        if (col > 4000) break;
+    }
+    fat32_close(fd);
+    last_exit_code = 0;
+}
+
+static void builtin_tail(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: tail <file> [lines]\n");
+        last_exit_code = 1;
+        return;
+    }
+    int want = 10;
+    int argfile = 1;
+    if (cmd->argc >= 3) {
+        want = katoi(cmd->args[2]);
+        if (want <= 0) want = 10;
+    }
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[argfile], path);
+    fat32_stat_t st;
+    if (fat32_stat(path, &st) != 0 || st.is_dir) {
+        term_set_color(TC_RED);
+        tprintf("tail: not a file\n");
+        term_reset();
+        last_exit_code = 1;
+        return;
+    }
+    if (st.size > 65536) {
+        tprintf("tail: file too large (max 64K)\n");
+        last_exit_code = 1;
+        return;
+    }
+    void *raw = kmalloc((size_t)st.size + 1);
+    if (!raw) {
+        last_exit_code = 1;
+        return;
+    }
+    int fd = fat32_open(path, FAT32_O_RDONLY);
+    if (fd < 0 || (uint32_t)fat32_read(fd, raw, st.size) != st.size) {
+        kfree(raw);
+        if (fd >= 0) fat32_close(fd);
+        last_exit_code = 1;
+        return;
+    }
+    fat32_close(fd);
+    ((char *)raw)[st.size] = 0;
+    char *p = (char *)raw;
+    int nlines = 0;
+    for (char *q = p; *q; q++)
+        if (*q == '\n') nlines++;
+    int skip = nlines - want;
+    if (skip < 0) skip = 0;
+    char *start = p;
+    if (skip > 0) {
+        int cur = 0;
+        for (char *q = p; *q; q++) {
+            if (*q == '\n') {
+                cur++;
+                start = q + 1;
+                if (cur >= skip) break;
+            }
+        }
+    }
+    term_puts(start);
+    if (st.size > 0 && ((char *)raw)[st.size - 1] != '\n') term_putchar('\n');
+    kfree(raw);
+    last_exit_code = 0;
+}
+
+static void builtin_stat_cmd(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: stat <path>\n");
+        last_exit_code = 1;
+        return;
+    }
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], path);
+    fat32_stat_t st;
+    if (fat32_stat(path, &st) != 0) {
+        term_set_color(TC_RED);
+        tprintf("stat: not found\n");
+        term_reset();
+        last_exit_code = 1;
+        return;
+    }
+    tprintf("File: %s\n", path);
+    tprintf("Size: %u  %s\n", st.size, st.is_dir ? "directory" : "file");
+    last_exit_code = 0;
+}
+
+static void builtin_hexdump(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: hexdump <file> [max_bytes]\n");
+        last_exit_code = 1;
+        return;
+    }
+    uint32_t maxb = 256;
+    if (cmd->argc >= 3) maxb = (uint32_t)katoi(cmd->args[2]);
+    if (maxb == 0 || maxb > 4096) maxb = 256;
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], path);
+    int fd = fat32_open(path, FAT32_O_RDONLY);
+    if (fd < 0) {
+        term_set_color(TC_RED);
+        tprintf("hexdump: cannot open\n");
+        term_reset();
+        last_exit_code = 1;
+        return;
+    }
+    uint8_t buf[32];
+    uint32_t off = 0;
+    while (off < maxb) {
+        uint32_t chunk = maxb - off;
+        if (chunk > sizeof(buf)) chunk = (uint32_t)sizeof(buf);
+        int n = fat32_read(fd, buf, chunk);
+        if (n <= 0) break;
+        tprintf("%04x: ", off);
+        for (int i = 0; i < n; i++) tprintf("%02x ", buf[i]);
+        tprintf(" |");
+        for (int i = 0; i < n; i++) {
+            uint8_t c = buf[i];
+            term_putchar((c >= 32 && c < 127) ? (char)c : '.');
+        }
+        tprintf("|\n");
+        off += (uint32_t)n;
+    }
+    fat32_close(fd);
+    last_exit_code = 0;
+}
+
+static void builtin_basename(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: basename <path>\n");
+        last_exit_code = 1;
+        return;
+    }
+    const char *p = cmd->args[1];
+    char *slash = kstrrchr(p, '/');
+    tprintf("%s\n", slash ? slash + 1 : p);
+    last_exit_code = 0;
+}
+
+static void builtin_dirname(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: dirname <path>\n");
+        last_exit_code = 1;
+        return;
+    }
+    char tmp[SHELL_MAX_PATH];
+    kstrncpy(tmp, cmd->args[1], SHELL_MAX_PATH - 1);
+    tmp[SHELL_MAX_PATH - 1] = 0;
+    char *slash = kstrrchr(tmp, '/');
+    if (!slash) {
+        tprintf(".\n");
+    } else if (slash == tmp) {
+        tprintf("/\n");
+    } else {
+        *slash = 0;
+        tprintf("%s\n", tmp);
+    }
+    last_exit_code = 0;
+}
+
+static void builtin_version(cmd_t *cmd) {
+    (void)cmd;
+    tprintf("Eclipse32 — ring 0 kernel + esh + .INS installer + WAV (speaker)\n");
+    last_exit_code = 0;
+}
+
+static void builtin_len(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: len <file>\n");
+        last_exit_code = 1;
+        return;
+    }
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], path);
+    fat32_stat_t st;
+    if (fat32_stat(path, &st) != 0 || st.is_dir) {
+        last_exit_code = 1;
+        return;
+    }
+    tprintf("%u\n", st.size);
+    last_exit_code = 0;
+}
+
+static void builtin_arch(cmd_t *cmd) {
+    (void)cmd;
+    tprintf("i686-pc-eclipse32\n");
+    last_exit_code = 0;
+}
+
+static void builtin_hostname(cmd_t *cmd) {
+    (void)cmd;
+    const char *h = env_get("HOSTNAME");
+    tprintf("%s\n", h ? h : "eclipse32");
+    last_exit_code = 0;
+}
+
+static int wav_open_pcm(int fd, uint32_t *pcm_bytes, uint16_t *bits, uint16_t *chans, uint32_t *rate) {
+    uint8_t hdr[12];
+    if (fat32_read(fd, hdr, 12) != 12) return -1;
+    if (kmemcmp(hdr, "RIFF", 4) != 0 || kmemcmp(hdr + 8, "WAVE", 4) != 0) return -1;
+    *bits = 8;
+    *chans = 1;
+    *rate = 8000;
+    for (int guard = 0; guard < 256; guard++) {
+        uint8_t ch[8];
+        if (fat32_read(fd, ch, 8) != 8) return -1;
+        uint32_t csz = (uint32_t)ch[4] | ((uint32_t)ch[5] << 8) | ((uint32_t)ch[6] << 16) | ((uint32_t)ch[7] << 24);
+        if (kmemcmp(ch, "fmt ", 4) == 0) {
+            uint8_t fmt[32];
+            if (csz < 16) return -1;
+            uint32_t rd = csz > sizeof(fmt) ? (uint32_t)sizeof(fmt) : csz;
+            if (fat32_read(fd, fmt, (int)rd) != (int)rd) return -1;
+            *chans = (uint16_t)((uint16_t)fmt[2] | ((uint16_t)fmt[3] << 8));
+            *rate = (uint32_t)fmt[4] | ((uint32_t)fmt[5] << 8) | ((uint32_t)fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
+            *bits = (uint16_t)((uint16_t)fmt[14] | ((uint16_t)fmt[15] << 8));
+            if (csz > rd) {
+                uint32_t skip = csz - rd;
+                if (fat32_seek(fd, (int32_t)skip, FAT32_SEEK_CUR) < 0) return -1;
+            }
+        } else if (kmemcmp(ch, "data", 4) == 0) {
+            *pcm_bytes = csz;
+            return 0;
+        } else {
+            uint32_t skip = (csz + 1u) & ~1u;
+            if (fat32_seek(fd, (int32_t)skip, FAT32_SEEK_CUR) < 0) return -1;
+        }
+    }
+    return -1;
+}
+
+static void builtin_wavplay(cmd_t *cmd) {
+    if (cmd->argc < 2) {
+        tprintf("usage: wavplay <file.wav>\n");
+        last_exit_code = 1;
+        return;
+    }
+    char path[SHELL_MAX_PATH];
+    path_resolve(cmd->args[1], path);
+    int fd = fat32_open(path, FAT32_O_RDONLY);
+    if (fd < 0) {
+        term_set_color(TC_RED);
+        tprintf("wavplay: cannot open\n");
+        term_reset();
+        last_exit_code = 1;
+        return;
+    }
+    uint32_t ds;
+    uint16_t bits, chans;
+    uint32_t rate;
+    if (wav_open_pcm(fd, &ds, &bits, &chans, &rate) != 0) {
+        fat32_close(fd);
+        tprintf("wavplay: invalid RIFF WAVE file\n");
+        last_exit_code = 1;
+        return;
+    }
+    if (bits != 8 || chans != 1) {
+        fat32_close(fd);
+        tprintf("wavplay: only 8-bit mono PCM supported\n");
+        last_exit_code = 1;
+        return;
+    }
+    if (ds > 512 * 1024) ds = 512 * 1024;
+    tprintf("[wavplay] rate=%u Hz, %u bytes (PC speaker, ~1 sample/ms)\n", rate, ds);
+    uint32_t step = rate / 1000;
+    if (step < 1) step = 1;
+    uint32_t pos = 0;
+    while (pos < ds) {
+        uint8_t sample;
+        if (fat32_read(fd, &sample, 1) != 1) break;
+        if (pos % step == 0) {
+            uint32_t hz = 200u + (uint32_t)sample * 8u;
+            if (hz > 4000u) hz = 4000u;
+            speaker_on(hz);
+            pit_sleep_ms(1);
+            speaker_off();
+        }
+        pos++;
+    }
+    speaker_off();
+    fat32_close(fd);
+    last_exit_code = 0;
+}
+
+// =============================================================================
 // Built-ins
 // =============================================================================
 static void builtin_help(void) {
@@ -474,6 +807,18 @@ static void builtin_help(void) {
         "exit    ","exit [code]",
         "reboot  ","Reboot",
         "halt    ","Halt",
+        "install ","install <pkg.ins>  (.INS package)",
+        "head    ","head <file> [lines]",
+        "tail    ","tail <file> [lines]",
+        "stat    ","stat <path>",
+        "hexdump ","hexdump <file> [max_b]",
+        "basename","basename <path>",
+        "dirname ","dirname <path>",
+        "version ","Show build tag",
+        "len     ","len <file>",
+        "arch    ","Machine triple",
+        "hostname","Print HOSTNAME",
+        "wavplay ","wavplay <file.wav>  (8-bit mono, PC speaker)",
         NULL,NULL
     };
     for(int i=0;h[i];i+=2){
@@ -1080,7 +1425,8 @@ static int run_builtin(cmd_t *cmd);
 static bool is_builtin(const char *n){
     static const char *b[]={"help","echo","cd","pwd","ls","cat","touch","mkdir","rm","cp","mv",
         "env","export","set","unset","alias","unalias","history","clear","uname","uptime","free",
-        "date","sleep","beep","wc","which","source","exit","reboot","halt","true","false","write","ed",NULL};
+        "date","sleep","beep","wc","which","source","exit","reboot","halt","true","false","write","ed",
+        "install","head","tail","stat","hexdump","basename","dirname","version","len","arch","hostname","wavplay",NULL};
     for(int i=0;b[i];i++) if(kstrcmp(n,b[i])==0) return true;
     return false;
 }
@@ -1136,6 +1482,18 @@ static int run_builtin(cmd_t *cmd){
     else if(kstrcmp(n,"beep")==0)    builtin_beep(cmd);
     else if(kstrcmp(n,"wc")==0)      builtin_wc(cmd);
     else if(kstrcmp(n,"which")==0)   builtin_which(cmd);
+    else if(kstrcmp(n,"install")==0)  builtin_install_cmd(cmd);
+    else if(kstrcmp(n,"head")==0)     builtin_head(cmd);
+    else if(kstrcmp(n,"tail")==0)     builtin_tail(cmd);
+    else if(kstrcmp(n,"stat")==0)     builtin_stat_cmd(cmd);
+    else if(kstrcmp(n,"hexdump")==0)  builtin_hexdump(cmd);
+    else if(kstrcmp(n,"basename")==0) builtin_basename(cmd);
+    else if(kstrcmp(n,"dirname")==0)  builtin_dirname(cmd);
+    else if(kstrcmp(n,"version")==0) builtin_version(cmd);
+    else if(kstrcmp(n,"len")==0)      builtin_len(cmd);
+    else if(kstrcmp(n,"arch")==0)     builtin_arch(cmd);
+    else if(kstrcmp(n,"hostname")==0) builtin_hostname(cmd);
+    else if(kstrcmp(n,"wavplay")==0)  builtin_wavplay(cmd);
     else if(kstrcmp(n,"reboot")==0)  builtin_reboot();
     else if(kstrcmp(n,"halt")==0)    builtin_halt();
     else if(kstrcmp(n,"exit")==0){

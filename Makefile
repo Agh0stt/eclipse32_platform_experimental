@@ -44,6 +44,11 @@ NUMECHO_OBJ   := $(BUILD)/apps/numecho.o
 NUMECHO_ELF   := $(BUILD)/apps/numecho.elf
 NUMECHO_BIN   := $(BUILD)/apps/numecho.bin
 NUMECHO_E32   := $(BUILD)/apps/NUMECHO.E32
+WRITER_OBJ    := $(BUILD)/apps/writer.o
+WRITER_ELF    := $(BUILD)/apps/writer.elf
+WRITER_BIN    := $(BUILD)/apps/writer.bin
+WRITER_E32    := $(BUILD)/apps/WRITER.E32
+WRITER_INS    := $(BUILD)/WRITER.INS
 LIBC_STRING_OBJ := $(BUILD)/apps/sdk/libc/string.o
 LIBC_UNISTD_OBJ := $(BUILD)/apps/sdk/libc/unistd.o
 LIBC_STDIO_OBJ  := $(BUILD)/apps/sdk/libc/stdio.o
@@ -70,7 +75,8 @@ KERNEL_SRCS := \
     $(KERNEL_DIR)/syscall/syscall.c \
     $(KERNEL_DIR)/exec/e32_loader.c \
     $(KERNEL_DIR)/initramfs/initramfs.c \
-    $(SHELL_DIR)/shell.c
+    $(SHELL_DIR)/shell.c \
+    $(SHELL_DIR)/ins_pkg.c
 
 # --- Kernel ASM sources ---
 KERNEL_ASM_SRCS := \
@@ -211,6 +217,30 @@ $(NUMECHO_E32): $(NUMECHO_BIN) tools/pack_e32.py | $(BUILD)
 	@echo "[PACK] numecho E32"
 	python3 tools/pack_e32.py $(NUMECHO_BIN) $(NUMECHO_E32)
 
+$(WRITER_OBJ): $(APPS_DIR)/writer/writer.c $(APPS_DIR)/sdk/e32_syscall.h | $(BUILD)
+	@mkdir -p $(dir $@)
+	@echo "[CC  ] writer app"
+	$(CC) $(APP_CFLAGS) -c -o $@ $<
+
+$(WRITER_ELF): $(CRT0_OBJ) $(WRITER_OBJ) $(LIBC_OBJS) $(APPS_DIR)/sdk/app.ld | $(BUILD)
+	@echo "[LD  ] writer ELF"
+	$(LD) -m elf_i386 -nostdlib -T $(APPS_DIR)/sdk/app.ld -o $@ $(CRT0_OBJ) $(WRITER_OBJ) $(LIBC_OBJS)
+
+$(WRITER_BIN): $(WRITER_ELF) | $(BUILD)
+	@echo "[OBJCOPY] writer BIN"
+	$(OBJCOPY) -O binary $(WRITER_ELF) $@
+
+$(WRITER_E32): $(WRITER_BIN) tools/pack_e32.py | $(BUILD)
+	@echo "[PACK] writer E32"
+	python3 tools/pack_e32.py $(WRITER_BIN) $(WRITER_E32)
+
+# Eclipse32 Install Stream bundle: Writer app + install.cfg (for `install /WRITER.INS`)
+$(WRITER_INS): $(WRITER_E32) tools/writer_pkg/install.cfg tools/pack_ins.py | $(BUILD)
+	@mkdir -p $(BUILD)/writer_pkg_staging
+	cp tools/writer_pkg/install.cfg $(BUILD)/writer_pkg_staging/install.cfg
+	cp $(WRITER_E32) $(BUILD)/writer_pkg_staging/WRITER.E32
+	python3 tools/pack_ins.py $(BUILD)/writer_pkg_staging $(WRITER_INS)
+
 # =============================================================================
 # Disk image assembly
 # Stage1  @ LBA 0          (512 bytes)
@@ -219,7 +249,7 @@ $(NUMECHO_E32): $(NUMECHO_BIN) tools/pack_e32.py | $(BUILD)
 # FAT32   @ LBA 2048       (starts a 1MB offset for nice alignment)
 # Kernel  @ FAT32 root as KERNEL.BIN
 # =============================================================================
-$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(HELLO_APP_E32) $(HELLOC_E32) $(NUMECHO_E32) | $(BUILD)
+$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(HELLO_APP_E32) $(HELLOC_E32) $(NUMECHO_E32) $(WRITER_E32) $(WRITER_INS) | $(BUILD)
 	@echo "[IMG ] Creating disk image"
 	dd if=/dev/zero      of=$@ bs=512 count=65536 status=none
 	dd if=$(STAGE1_BIN)  of=$@ bs=512 seek=0  conv=notrunc status=none
@@ -235,6 +265,10 @@ $(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(HELLO_APP_E32) $(HELLOC
 	python3 tools/inject_fat32_file.py $@ $(HELLOC_E32) HELLOC.E32
 	@echo "[IMG ] Injecting NUMECHO.E32 into FAT32 root"
 	python3 tools/inject_fat32_file.py $@ $(NUMECHO_E32) NUMECHO.E32
+	@echo "[IMG ] Injecting WRITER.E32 into FAT32 root"
+	python3 tools/inject_fat32_file.py $@ $(WRITER_E32) WRITER.E32
+	@echo "[IMG ] Injecting WRITER.INS (install package — use: install /WRITER.INS)"
+	python3 tools/inject_ins.py $@ $(WRITER_INS) WRITER.INS
 	@echo "[IMG ] Done: $@"
 $(BUILD):
 	mkdir -p $(BUILD)
