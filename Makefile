@@ -18,6 +18,7 @@ CFLAGS     := -m32 -march=i686 -std=gnu11 \
               -Ikernel/mm -Ikernel/fs -Ikernel/initramfs \
               -Ishell
 LDFLAGS    := -m elf_i386 -nostdlib --nmagic
+
 # --- Directories ---
 BUILD      := build
 BOOT_S1    := boot/stage1
@@ -28,6 +29,7 @@ APPS_DIR   := apps
 APP_CFLAGS := -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector \
               -fPIE -fPIC -O2 -nostdlib -fno-builtin \
               -I$(APPS_DIR)/sdk -I$(APPS_DIR)/sdk/libc
+
 # --- Output files ---
 STAGE1_BIN   := $(BUILD)/stage1.bin
 STAGE2_BIN   := $(BUILD)/stage2.bin
@@ -134,107 +136,86 @@ $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld
 	@echo "[INFO] Kernel size: $$(wc -c < $@) bytes"
 
 # =============================================================================
-# Demo app build (.e32)
+# Built-in apps (baked into disk image at build time)
 # =============================================================================
 $(HELLO_APP_BIN): $(APPS_DIR)/hello/hello.asm | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[NASM] Hello app payload"
 	$(NASM) -f bin -o $@ $<
 
 $(HELLO_APP_E32): $(HELLO_APP_BIN) tools/pack_e32.py | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[PACK] Hello app E32"
 	python3 tools/pack_e32.py $(HELLO_APP_BIN) $(HELLO_APP_E32)
 
 $(CRT0_OBJ): $(APPS_DIR)/sdk/crt0.asm | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[NASM] C app crt0"
 	$(NASM) -f elf32 -o $@ $<
 
 $(LIBC_STRING_OBJ): $(APPS_DIR)/sdk/libc/string.c $(APPS_DIR)/sdk/libc/string.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] libc string"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(LIBC_UNISTD_OBJ): $(APPS_DIR)/sdk/libc/unistd.c $(APPS_DIR)/sdk/libc/unistd.h $(APPS_DIR)/sdk/e32_syscall.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] libc unistd"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(LIBC_STDIO_OBJ): $(APPS_DIR)/sdk/libc/stdio.c $(APPS_DIR)/sdk/libc/stdio.h $(APPS_DIR)/sdk/libc/string.h $(APPS_DIR)/sdk/libc/unistd.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] libc stdio"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(LIBC_ERRNO_OBJ): $(APPS_DIR)/sdk/libc/errno.c $(APPS_DIR)/sdk/libc/errno.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] libc errno"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(LIBC_STDLIB_OBJ): $(APPS_DIR)/sdk/libc/stdlib.c $(APPS_DIR)/sdk/libc/stdlib.h $(APPS_DIR)/sdk/libc/errno.h $(APPS_DIR)/sdk/libc/string.h $(APPS_DIR)/sdk/libc/unistd.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] libc stdlib"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(HELLOC_OBJ): $(APPS_DIR)/hello/hello.c $(APPS_DIR)/sdk/e32_syscall.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] Hello C app"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(HELLOC_ELF): $(CRT0_OBJ) $(HELLOC_OBJ) $(LIBC_OBJS) $(APPS_DIR)/sdk/app.ld | $(BUILD)
-	@echo "[LD  ] Hello C app ELF"
 	$(LD) -m elf_i386 -nostdlib -T $(APPS_DIR)/sdk/app.ld -o $@ $(CRT0_OBJ) $(HELLOC_OBJ) $(LIBC_OBJS)
 
 $(HELLOC_BIN): $(HELLOC_ELF) | $(BUILD)
-	@echo "[OBJCOPY] Hello C app BIN"
 	$(OBJCOPY) -O binary $(HELLOC_ELF) $@
 
 $(HELLOC_E32): $(HELLOC_BIN) tools/pack_e32.py | $(BUILD)
-	@echo "[PACK] Hello C app E32"
 	python3 tools/pack_e32.py $(HELLOC_BIN) $(HELLOC_E32)
 
 $(NUMECHO_OBJ): $(APPS_DIR)/numecho/numecho.c $(APPS_DIR)/sdk/e32_syscall.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] numecho app"
 	$(CC) -m32 -march=i686 -std=gnu11 -ffreestanding -fno-stack-protector -fPIE -fPIC -O2 \
 	      -nostdlib -fno-builtin -I$(APPS_DIR)/sdk -I$(APPS_DIR)/sdk/libc -c -o $@ $<
 
 $(NUMECHO_ELF): $(CRT0_OBJ) $(NUMECHO_OBJ) $(LIBC_OBJS) $(APPS_DIR)/sdk/app.ld | $(BUILD)
-	@echo "[LD  ] numecho ELF"
 	$(LD) -m elf_i386 -nostdlib -T $(APPS_DIR)/sdk/app.ld -o $@ $(CRT0_OBJ) $(NUMECHO_OBJ) $(LIBC_OBJS)
 
 $(NUMECHO_BIN): $(NUMECHO_ELF) | $(BUILD)
-	@echo "[OBJCOPY] numecho BIN"
 	$(OBJCOPY) -O binary $(NUMECHO_ELF) $@
 
 $(NUMECHO_E32): $(NUMECHO_BIN) tools/pack_e32.py | $(BUILD)
-	@echo "[PACK] numecho E32"
 	python3 tools/pack_e32.py $(NUMECHO_BIN) $(NUMECHO_E32)
 
 $(WRITER_OBJ): $(APPS_DIR)/writer/writer.c $(APPS_DIR)/sdk/e32_syscall.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	@echo "[CC  ] writer app"
 	$(CC) $(APP_CFLAGS) -c -o $@ $<
 
 $(WRITER_ELF): $(CRT0_OBJ) $(WRITER_OBJ) $(LIBC_OBJS) $(APPS_DIR)/sdk/app.ld | $(BUILD)
-	@echo "[LD  ] writer ELF"
 	$(LD) -m elf_i386 -nostdlib -T $(APPS_DIR)/sdk/app.ld -o $@ $(CRT0_OBJ) $(WRITER_OBJ) $(LIBC_OBJS)
 
 $(WRITER_BIN): $(WRITER_ELF) | $(BUILD)
-	@echo "[OBJCOPY] writer BIN"
 	$(OBJCOPY) -O binary $(WRITER_ELF) $@
 
 $(WRITER_E32): $(WRITER_BIN) tools/pack_e32.py | $(BUILD)
-	@echo "[PACK] writer E32"
 	python3 tools/pack_e32.py $(WRITER_BIN) $(WRITER_E32)
 
-# Eclipse32 Install Stream bundle: Writer app + install.cfg (for `install /WRITER.INS`)
 $(WRITER_INS): $(WRITER_E32) tools/writer_pkg/install.cfg tools/pack_ins.py | $(BUILD)
 	@mkdir -p $(BUILD)/writer_pkg_staging
 	cp tools/writer_pkg/install.cfg $(BUILD)/writer_pkg_staging/install.cfg
@@ -243,11 +224,6 @@ $(WRITER_INS): $(WRITER_E32) tools/writer_pkg/install.cfg tools/pack_ins.py | $(
 
 # =============================================================================
 # Disk image assembly
-# Stage1  @ LBA 0          (512 bytes)
-# Stage2  @ LBA 1          (64 sectors = 32KB)
-# BMP     @ LBA 65         (256 sectors = 128KB)
-# FAT32   @ LBA 2048       (starts a 1MB offset for nice alignment)
-# Kernel  @ FAT32 root as KERNEL.BIN
 # =============================================================================
 $(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(HELLO_APP_E32) $(HELLOC_E32) $(NUMECHO_E32) $(WRITER_E32) $(WRITER_INS) | $(BUILD)
 	@echo "[IMG ] Creating disk image"
@@ -255,27 +231,27 @@ $(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(HELLO_APP_E32) $(HELLOC
 	dd if=$(STAGE1_BIN)  of=$@ bs=512 seek=0  conv=notrunc status=none
 	dd if=$(STAGE2_BIN)  of=$@ bs=512 seek=1  conv=notrunc status=none
 	dd if=$(KERNEL_BIN)  of=$@ bs=512 seek=17 conv=notrunc status=none
-	@echo "[IMG ] Writing MBR partition table"
 	python3 tools/write_mbr.py $@
-	@echo "[IMG ] Formatting FAT32 partition (offset 2048 sectors)"
 	python3 tools/format_fat32.py $@
-	@echo "[IMG ] Injecting HELLO.E32 into FAT32 root"
 	python3 tools/inject_fat32_file.py $@ $(HELLO_APP_E32) HELLO.E32
-	@echo "[IMG ] Injecting HELLOC.E32 into FAT32 root"
 	python3 tools/inject_fat32_file.py $@ $(HELLOC_E32) HELLOC.E32
-	@echo "[IMG ] Injecting NUMECHO.E32 into FAT32 root"
 	python3 tools/inject_fat32_file.py $@ $(NUMECHO_E32) NUMECHO.E32
-	@echo "[IMG ] Injecting WRITER.E32 into FAT32 root"
 	python3 tools/inject_fat32_file.py $@ $(WRITER_E32) WRITER.E32
-	@echo "[IMG ] Injecting WRITER.INS (install package — use: install /WRITER.INS)"
 	python3 tools/inject_ins.py $@ $(WRITER_INS) WRITER.INS
 	@echo "[IMG ] Done: $@"
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
 clean:
 	rm -rf $(BUILD)
-# Usage: make app/newapp
+
+# =============================================================================
+# App tools — 4 separate targets
+# =============================================================================
+
+# 1. Compile only → build/apps/NAME.E32  (no injection)
+# Usage: make app/ekuecho
 app/%:
 	@echo "[APP ] Compiling $*"
 	@mkdir -p $(BUILD)/apps
@@ -284,8 +260,33 @@ app/%:
 	      $(CRT0_OBJ) $(BUILD)/apps/$*.o $(LIBC_OBJS)
 	$(OBJCOPY) -O binary $(BUILD)/apps/$*.elf $(BUILD)/apps/$*.bin
 	python3 tools/pack_e32.py $(BUILD)/apps/$*.bin $(BUILD)/apps/$*.E32
+	@echo "[DONE] $(BUILD)/apps/$*.E32 — use inject/ or ins/ to deploy"
+
+# 2. Inject raw .E32 into disk root (quick testing only)
+# Usage: make inject/ekuecho
+inject/%:
+	@echo "[INJECT] $*.E32 → disk root"
 	python3 tools/inject_fat32_file.py $(DISK_IMG) $(BUILD)/apps/$*.E32 $*.E32
-	@echo "[DONE] $*.E32 injected into $(DISK_IMG)"
+	@echo "[DONE] $*.E32 in FAT32 root"
+
+# 3. Inject any arbitrary file into disk root
+# Usage: make inject-file/path/to/file.txt
+inject-file/%:
+	@echo "[INJECT-FILE] $* → disk root"
+	python3 tools/inject_fat32_file.py $(DISK_IMG) $* $(notdir $*)
+	@echo "[DONE] $(notdir $*) in FAT32 root"
+
+# 4. Package as .INS and inject (proper install — requires apps/NAME/install.cfg)
+# Usage: make ins/ekuecho
+ins/%:
+	@echo "[INS ] Packaging $*"
+	@mkdir -p $(BUILD)/ins/$*_pkg
+	cp $(BUILD)/apps/$*.E32 $(BUILD)/ins/$*_pkg/
+	cp $(APPS_DIR)/$*/install.cfg $(BUILD)/ins/$*_pkg/
+	python3 tools/pack_ins.py $(BUILD)/ins/$*_pkg/ $(BUILD)/ins/$*.INS
+	python3 tools/inject_ins.py $(DISK_IMG) $(BUILD)/ins/$*.INS $*.INS
+	@echo "[DONE] $*.INS injected into $(DISK_IMG) — run: install $*.INS"
+
 # =============================================================================
 # Run with QEMU
 # =============================================================================
@@ -297,8 +298,6 @@ run: $(DISK_IMG)
 		-boot c \
 		-no-reboot \
 		-serial stdio
-
-run-apps: run
 
 run-debug: $(DISK_IMG)
 	qemu-system-i386 \
